@@ -88,7 +88,7 @@ password = "$secret{dbPassword}"
 
 | Input | Resolves To |
 |---|---|
-| `10.100.5.122` + port `9443` | `https://10.100.5.122:9443` |
+| `1X.1XX.X.X` + port `9443` | `https://1X.1XX.X.X:9443` |
 | `myserver.wso2.com` + port empty | `https://myserver.wso2.com` |
 | `myserver.wso2.com:9443` + port any | `https://myserver.wso2.com:9443` |
 | `https://myserver.wso2.com` | `https://myserver.wso2.com` |
