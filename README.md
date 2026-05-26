@@ -29,7 +29,7 @@ java -jar VaultExtractor.jar
 
 2. **Enter connection details when prompted**
    ```
-   Source EI Host/IP (e.g. 10.100.5.122): 10.100.5.122
+   Source EI Host/IP (e.g. 1x.1x0.5x.1x2): 1x.1x0.5x.1x2
    Port [9443]:                             9443
    Username [admin]:                        admin
    Password:                                ••••••
