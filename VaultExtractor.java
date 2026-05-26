@@ -94,6 +94,63 @@ public class VaultExtractor {
         System.out.println("\nExported " + vault.size() + " entries to:");
         System.out.println("  " + propsFile.toAbsolutePath() + "  (EI cipher-text format)");
         System.out.println("  " + tomlFile.toAbsolutePath() + "  (MI deployment.toml snippet)");
+
+        // Step 4 — optionally decrypt all values via doDecrypt on the server
+        System.out.print("\nDo you want to decrypt the passwords now? (y/n) [n]: ");
+        String doDecryptChoice = sc.nextLine().trim();
+        if (doDecryptChoice.equalsIgnoreCase("y")) {
+            System.out.println("\nDecrypting via MediationSecurityAdminService...\n");
+            Map<String, String> decrypted = new LinkedHashMap<>();
+            int ok = 0, fail = 0;
+            for (Map.Entry<String, String> e : vault.entrySet()) {
+                String plain = doDecrypt(baseUrl, creds, e.getKey());
+                decrypted.put(e.getKey(), plain);
+                if (plain.startsWith("ERROR")) {
+                    System.out.printf("  ERR  %-40s : %s%n", e.getKey(), plain);
+                    fail++;
+                } else {
+                    System.out.printf("  OK   %-40s = %s%n", e.getKey(), plain);
+                    ok++;
+                }
+            }
+
+            Path decFile = outDir.resolve("decrypted-values.txt");
+            StringBuilder dec = new StringBuilder();
+            dec.append("# WSO2 EI Secure Vault — decrypted values — ").append(new java.util.Date()).append("\n\n");
+            for (Map.Entry<String, String> e : decrypted.entrySet()) {
+                dec.append(e.getKey()).append("=").append(e.getValue()).append("\n");
+            }
+            Files.writeString(decFile, dec.toString());
+
+            System.out.println("\nDecryption complete — " + ok + " OK, " + fail + " failed");
+            System.out.println("  " + decFile.toAbsolutePath());
+        }
+    }
+
+    // ── doDecrypt via MediationSecurityAdminService ────────────────────────
+
+    static String doDecrypt(String baseUrl, String creds, String cipherText) {
+        String soap = "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" "
+                    + "xmlns:ns=\"http://org.apache.synapse/xsd\">"
+                    + "<soapenv:Header/><soapenv:Body>"
+                    + "<ns:doDecrypt>"
+                    + "<ns:cipherText>" + cipherText + "</ns:cipherText>"
+                    + "</ns:doDecrypt>"
+                    + "</soapenv:Body></soapenv:Envelope>";
+        try {
+            String response = httpSoap(baseUrl + "/services/MediationSecurityAdminService",
+                                       "urn:doDecrypt", soap, creds);
+            if (response == null) return "ERROR: null response";
+            // match <anyPrefix:return>value</anyPrefix:return>
+            Matcher m = Pattern.compile("<\\w+:return\\b[^>]*>(.*?)</\\w+:return>", Pattern.DOTALL).matcher(response);
+            if (m.find()) return m.group(1).trim();
+            // match plain <return>value</return>
+            Matcher m2 = Pattern.compile("<return[^>]*>(.*?)</return>", Pattern.DOTALL).matcher(response);
+            if (m2.find()) return m2.group(1).trim();
+            return "ERROR: " + response;
+        } catch (Exception e) {
+            return "ERROR: " + e.getMessage();
+        }
     }
 
     // ── URL builder ───────────────────────────────────────────────────────
@@ -132,45 +189,88 @@ public class VaultExtractor {
         String loginBody = "username=" + URLEncoder.encode(parts[0], StandardCharsets.UTF_8)
                          + "&password=" + URLEncoder.encode(parts[1], StandardCharsets.UTF_8)
                          + "&loginStatus=true";
-        int loginStatus = httpPost(baseUrl + "/carbon/admin/login_action.jsp", loginBody, creds);
-        System.out.println("[debug] Login POST status: " + loginStatus);
+        httpPost(baseUrl + "/carbon/admin/login_action.jsp", loginBody, creds);
 
-        String vaultUrl = baseUrl + "/carbon/mediation_secure_vault/manageSecureVault.jsp"
-                        + "?region=region1&item=secure_vault_list_view";
-        System.out.println("[debug] Fetching: " + vaultUrl);
-        String html = httpGet(vaultUrl, creds);
-        if (html == null) {
-            System.out.println("[debug] Got null response from vault page");
-            return aliases;
+        // First try SOAP — gets all properties in one call, no pagination
+        List<String> soapAliases = fetchAliasesViaSOAP(baseUrl, creds);
+        if (!soapAliases.isEmpty()) {
+            System.out.println("  (fetched via SOAP — " + soapAliases.size() + " aliases)");
+            return soapAliases;
         }
-        System.out.println("[debug] Page response length: " + html.length() + " chars");
-        System.out.println("[debug] First 600 chars:\n" + html.substring(0, Math.min(600, html.length())));
-        System.out.println("...");
 
-        // Aliases are in hidden inputs: id="oldPropName_N" type="hidden" value="aliasName"
-        Pattern p = Pattern.compile("id=\"oldPropName_\\d+\"[^>]*value=\"([^\"]+)\"",
-                                    Pattern.CASE_INSENSITIVE);
-        Matcher m = p.matcher(html);
+        // Fallback — scrape UI page by page
         Set<String> seen = new LinkedHashSet<>();
-        while (m.find()) seen.add(m.group(1).trim());
+        int pageNumber = 0;
+        while (true) {
+            String vaultUrl = baseUrl + "/carbon/mediation_secure_vault/manageSecureVault.jsp"
+                            + "?region=region1&item=secure_vault_list_view&pageNumber=" + pageNumber;
+            String html = httpGet(vaultUrl, creds);
+            if (html == null) break;
 
-        // Fallback: value="alias" id="propName_N"
-        if (seen.isEmpty()) {
-            Pattern p2 = Pattern.compile("value=\"([^\"]+)\"[^>]*id=\"propName_\\d+\"",
-                                         Pattern.CASE_INSENSITIVE);
-            Matcher m2 = p2.matcher(html);
-            while (m2.find()) seen.add(m2.group(1).trim());
-        }
+            int before = seen.size();
+            extractAliasesFromHtml(html, seen);
 
-        // Fallback: span class="__propName"
-        if (seen.isEmpty()) {
-            Pattern p3 = Pattern.compile("class=\"__propName\">([^<]+)</span>",
-                                         Pattern.CASE_INSENSITIVE);
-            Matcher m3 = p3.matcher(html);
-            while (m3.find()) seen.add(m3.group(1).trim());
+            // Parse total from page: "Showing X - Y of Z"
+            Matcher tm = Pattern.compile("of\\s+(\\d+)", Pattern.CASE_INSENSITIVE).matcher(html);
+            int total = tm.find() ? Integer.parseInt(tm.group(1)) : -1;
+
+            System.out.printf("  page %d — found %d so far%s%n",
+                pageNumber, seen.size(),
+                total > 0 ? " (total: " + total + ")" : "");
+
+            // Stop if no new aliases found on this page, or we have them all
+            if (seen.size() == before) break;
+            if (total > 0 && seen.size() >= total) break;
+            pageNumber++;
         }
         aliases.addAll(seen);
         return aliases;
+    }
+
+    // ── Fetch all aliases via SOAP getPropertiesOfResource (no pagination) ───
+
+    static List<String> fetchAliasesViaSOAP(String baseUrl, String creds) {
+        String soap = "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" "
+                    + "xmlns:ser=\"" + SOAP_NS + "\">"
+                    + "<soapenv:Header/><soapenv:Body>"
+                    + "<ser:getPropertiesOfResource>"
+                    + "<ser:resourcePath>" + VAULT_REG_PATH + "</ser:resourcePath>"
+                    + "</ser:getPropertiesOfResource>"
+                    + "</soapenv:Body></soapenv:Envelope>";
+        List<String> aliases = new ArrayList<>();
+        try {
+            String response = httpSoap(baseUrl + "/services/ResourceAdminService",
+                                       "urn:getPropertiesOfResource", soap, creds);
+            if (response == null) return aliases;
+            // Each property key comes in a <key> element
+            Matcher m = Pattern.compile("<key>(.*?)</key>", Pattern.DOTALL).matcher(response);
+            while (m.find()) {
+                String k = m.group(1).trim();
+                if (!k.isEmpty()) aliases.add(k);
+            }
+        } catch (Exception e) {
+            // SOAP call not supported — caller falls back to UI scrape
+        }
+        return aliases;
+    }
+
+    // ── Extract aliases from a single HTML page ────────────────────────────
+
+    static void extractAliasesFromHtml(String html, Set<String> seen) {
+        // Pattern 1: id="oldPropName_N" ... value="alias"
+        Matcher m = Pattern.compile("id=\"oldPropName_\\d+\"[^>]*value=\"([^\"]+)\"",
+                                    Pattern.CASE_INSENSITIVE).matcher(html);
+        while (m.find()) seen.add(m.group(1).trim());
+
+        // Pattern 2: value="alias" ... id="propName_N"
+        Matcher m2 = Pattern.compile("value=\"([^\"]+)\"[^>]*id=\"propName_\\d+\"",
+                                     Pattern.CASE_INSENSITIVE).matcher(html);
+        while (m2.find()) seen.add(m2.group(1).trim());
+
+        // Pattern 3: <span class="__propName">alias</span>
+        Matcher m3 = Pattern.compile("class=\"__propName\">([^<]+)</span>",
+                                     Pattern.CASE_INSENSITIVE).matcher(html);
+        while (m3.find()) seen.add(m3.group(1).trim());
     }
 
     // ── Fetch encrypted value via SOAP getProperty ─────────────────────────
