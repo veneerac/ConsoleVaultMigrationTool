@@ -1,0 +1,8 @@
+*.class
+*.car
+*.txt
+.DS_Store
+test/
+VaultExtractorJar/
+VaultMigrationTool/
+untitled folder/
