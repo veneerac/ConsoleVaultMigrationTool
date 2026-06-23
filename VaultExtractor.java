@@ -88,7 +88,7 @@ public class VaultExtractor {
         System.out.println("  " + tomlFile.toAbsolutePath() + "  (MI deployment.toml snippet)");
     }
 
-    // ── Fetch all vault entries from the UI page in one HTTP call ─────────
+    // ── Fetch all vault entries — tries vault manager, then registry browser ─
 
     static Map<String, String> fetchVaultFromUI(String baseUrl, String creds) throws Exception {
         String[] parts = new String(Base64.getDecoder().decode(creds), StandardCharsets.UTF_8).split(":", 2);
@@ -96,30 +96,51 @@ public class VaultExtractor {
         CookieManager cm = new CookieManager();
         CookieHandler.setDefault(cm);
 
-        // Login to get session cookie
         String loginBody = "username=" + URLEncoder.encode(parts[0], StandardCharsets.UTF_8)
                          + "&password=" + URLEncoder.encode(parts[1], StandardCharsets.UTF_8)
                          + "&loginStatus=true";
         httpPost(baseUrl + "/carbon/admin/login_action.jsp", loginBody, creds);
 
-        // WSO2 renders ALL entries in the HTML at once (pagination is client-side JS only)
+        // URL 1: Secure Vault manager page
         String vaultUrl = baseUrl + "/carbon/mediation_secure_vault/manageSecureVault.jsp"
                         + "?region=region1&item=secure_vault_list_view";
         String html = httpGet(vaultUrl, creds);
+        if (html != null) {
+            Map<String, String> result = extractVaultFromHtml(html);
+            if (!result.isEmpty()) {
+                System.out.println("  (fetched via Secure Vault manager — " + result.size() + " entries)");
+                return result;
+            }
+        }
+
+        // URL 2: Registry browser — confirmed to show all entries in one page
+        System.out.println("  Vault manager returned 0 entries — trying registry browser...");
+        String registryUrl = baseUrl + "/carbon/resources/resource.jsp"
+                           + "?region=region3&item=resource_browser_menu"
+                           + "&path=/_system/config/repository/components/secure-vault&viewType=std";
+        html = httpGet(registryUrl, creds);
         if (html == null) return new LinkedHashMap<>();
 
-        return extractVaultFromHtml(html);
+        Map<String, String> result = extractVaultFromHtml(html);
+        if (!result.isEmpty()) {
+            System.out.println("  (fetched via registry browser — " + result.size() + " entries)");
+        }
+        return result;
     }
 
     // ── Extract alias+value pairs from vault HTML ─────────────────────────
-    // HTML structure (attributes span multiple lines):
+    // Tries two patterns — both with DOTALL because attributes span multiple lines:
+    //
+    // Pattern A (manageSecureVault.jsp):
     //   <span class="__propName">ALIAS</span>
-    //   <span class="__propValue">MULTILINE_BASE64==</span>
-    // DOTALL is required because the base64 value wraps across lines.
+    //   <span class="__propValue">MULTILINE_BASE64</span>
+    //
+    // Pattern B (registry browser / fallback):
+    //   id="oldPropName_N" type="hidden" value="ALIAS"
+    //   <input value="MULTILINE_BASE64" id="propValue_N"
 
     static Map<String, String> extractVaultFromHtml(String html) {
-        Map<String, String> vault = new LinkedHashMap<>();
-
+        // Pattern A: __propName / __propValue spans
         List<String> aliases = new ArrayList<>();
         Matcher am = Pattern.compile("class=\"__propName\">([^<]+)</span>",
                                      Pattern.CASE_INSENSITIVE).matcher(html);
@@ -128,23 +149,39 @@ public class VaultExtractor {
         List<String> values = new ArrayList<>();
         Matcher vm = Pattern.compile("class=\"__propValue\">(.*?)</span>",
                                      Pattern.DOTALL | Pattern.CASE_INSENSITIVE).matcher(html);
-        while (vm.find()) {
-            // Strip all whitespace (newlines inside multiline base64 values)
-            values.add(vm.group(1).trim().replaceAll("\\s+", ""));
-        }
+        while (vm.find()) values.add(vm.group(1).trim().replaceAll("\\s+", ""));
 
-        if (aliases.isEmpty()) {
-            System.out.println("  No entries found in page HTML — check login or page structure.");
+        if (!aliases.isEmpty() && aliases.size() == values.size()) {
+            Map<String, String> vault = new LinkedHashMap<>();
+            for (int i = 0; i < aliases.size(); i++) vault.put(aliases.get(i), values.get(i));
             return vault;
         }
-        if (aliases.size() != values.size()) {
-            System.out.printf("  WARNING: %d aliases vs %d values — results may be incomplete%n",
-                aliases.size(), values.size());
+
+        // Pattern B: oldPropName_N input + propValue_N input (DOTALL — attributes on separate lines)
+        Map<Integer, String> aliasMap = new TreeMap<>();
+        Matcher am2 = Pattern.compile(
+            "id=\"oldPropName_(\\d+)\"\\s+type=\"hidden\"\\s+value=\"([^\"]+)\"",
+            Pattern.DOTALL | Pattern.CASE_INSENSITIVE).matcher(html);
+        while (am2.find()) aliasMap.put(Integer.parseInt(am2.group(1)), am2.group(2).trim());
+
+        Map<Integer, String> valueMap = new TreeMap<>();
+        Matcher vm2 = Pattern.compile(
+            "<input\\s+value=\"([^\"]*)\"\\s+id=\"propValue_(\\d+)\"",
+            Pattern.CASE_INSENSITIVE).matcher(html);
+        while (vm2.find()) {
+            int idx = Integer.parseInt(vm2.group(2));
+            valueMap.put(idx, vm2.group(1).trim().replaceAll("\\s+", ""));
         }
 
-        int count = Math.min(aliases.size(), values.size());
-        for (int i = 0; i < count; i++) {
-            vault.put(aliases.get(i), values.get(i));
+        Map<String, String> vault = new LinkedHashMap<>();
+        for (Map.Entry<Integer, String> e : aliasMap.entrySet()) {
+            String val = valueMap.get(e.getKey());
+            if (val != null) vault.put(e.getValue(), val);
+        }
+
+        if (vault.isEmpty()) {
+            System.out.println("  No entries found in page HTML.");
+            System.out.println("  Check: correct host/port, valid credentials, server accessible.");
         }
         return vault;
     }
