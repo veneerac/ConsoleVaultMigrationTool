@@ -37,9 +37,21 @@ public class VaultExtractor {
             password = sc.nextLine().trim();
         }
 
-        System.out.print("Output folder [" + System.getProperty("user.home") + "]: ");
-        String fi = sc.nextLine().trim();
-        String outputFolder = fi.isEmpty() ? System.getProperty("user.home") : fi;
+        String defaultOut = System.getProperty("user.home");
+        String outputFolder;
+        while (true) {
+            System.out.print("Output folder [" + defaultOut + "]: ");
+            String fi = sc.nextLine().trim();
+            if (fi.isEmpty()) { outputFolder = defaultOut; break; }
+            // Reject Windows-style paths when running on Linux/Mac
+            if (!System.getProperty("os.name").toLowerCase().contains("win")
+                    && fi.matches("^[A-Za-z]:\\\\.*")) {
+                System.out.println("  Windows path detected but running on Linux — enter a Linux path (e.g. /home/user/output)");
+                continue;
+            }
+            outputFolder = fi;
+            break;
+        }
 
         String baseUrl = buildBaseUrl(host, port);
         String creds   = Base64.getEncoder().encodeToString(
