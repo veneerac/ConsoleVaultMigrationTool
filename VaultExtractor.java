@@ -88,7 +88,8 @@ public class VaultExtractor {
         System.out.println("  " + tomlFile.toAbsolutePath() + "  (MI deployment.toml snippet)");
     }
 
-    // ── Fetch all vault entries — tries vault manager, then registry browser ─
+    // ── Fetch all vault entries — registry browser first (all entries, one page),
+    //    then paginate vault manager as fallback ────────────────────────────────
 
     static Map<String, String> fetchVaultFromUI(String baseUrl, String creds) throws Exception {
         String[] parts = new String(Base64.getDecoder().decode(creds), StandardCharsets.UTF_8).split(":", 2);
@@ -101,31 +102,38 @@ public class VaultExtractor {
                          + "&loginStatus=true";
         httpPost(baseUrl + "/carbon/admin/login_action.jsp", loginBody, creds);
 
-        // URL 1: Secure Vault manager page
-        String vaultUrl = baseUrl + "/carbon/mediation_secure_vault/manageSecureVault.jsp"
-                        + "?region=region1&item=secure_vault_list_view";
-        String html = httpGet(vaultUrl, creds);
+        // URL 1: Registry browser — always returns ALL entries in a single page
+        String registryUrl = baseUrl + "/carbon/resources/resource.jsp"
+                           + "?region=region3&item=resource_browser_menu"
+                           + "&path=/_system/config/repository/components/secure-vault&viewType=std";
+        String html = httpGet(registryUrl, creds);
         if (html != null) {
             Map<String, String> result = extractVaultFromHtml(html);
             if (!result.isEmpty()) {
-                System.out.println("  (fetched via Secure Vault manager — " + result.size() + " entries)");
+                System.out.println("  (fetched via registry browser — " + result.size() + " entries)");
                 return result;
             }
         }
 
-        // URL 2: Registry browser — confirmed to show all entries in one page
-        System.out.println("  Vault manager returned 0 entries — trying registry browser...");
-        String registryUrl = baseUrl + "/carbon/resources/resource.jsp"
-                           + "?region=region3&item=resource_browser_menu"
-                           + "&path=/_system/config/repository/components/secure-vault&viewType=std";
-        html = httpGet(registryUrl, creds);
-        if (html == null) return new LinkedHashMap<>();
-
-        Map<String, String> result = extractVaultFromHtml(html);
-        if (!result.isEmpty()) {
-            System.out.println("  (fetched via registry browser — " + result.size() + " entries)");
+        // URL 2: Vault manager — paginate through all pages (15 entries per page)
+        System.out.println("  Registry browser returned 0 — paginating vault manager...");
+        Map<String, String> vault = new LinkedHashMap<>();
+        for (int page = 1; page <= 200; page++) {
+            String vaultUrl = baseUrl + "/carbon/mediation_secure_vault/manageSecureVault.jsp"
+                            + "?region=region1&item=secure_vault_list_view&dynamicPageNumber=" + page;
+            html = httpGet(vaultUrl, creds);
+            if (html == null) break;
+            Map<String, String> pageResult = extractVaultFromHtml(html);
+            if (pageResult.isEmpty()) break;
+            vault.putAll(pageResult);
+            System.out.println("  Page " + page + ": " + pageResult.size() + " entries (running total: " + vault.size() + ")");
         }
-        return result;
+        if (!vault.isEmpty()) {
+            System.out.println("  (fetched via vault manager pagination — " + vault.size() + " entries)");
+        } else {
+            System.out.println("  No entries found. Check host/port, credentials, server accessibility.");
+        }
+        return vault;
     }
 
     // ── Extract alias+value pairs from vault HTML ─────────────────────────
