@@ -83,7 +83,7 @@ public class VaultExtractor {
         for (Map.Entry<String, String> e : vault.entrySet()) {
             sb.append(e.getKey()).append("=").append(e.getValue()).append("\n");
         }
-        Files.writeString(propsFile, sb.toString());
+        Files.write(propsFile, sb.toString().getBytes(StandardCharsets.UTF_8));
 
         Path tomlFile = outDir.resolve("vault-export-mi.toml");
         StringBuilder toml = new StringBuilder();
@@ -93,7 +93,7 @@ public class VaultExtractor {
         for (Map.Entry<String, String> e : vault.entrySet()) {
             toml.append(e.getKey()).append(" = \"").append(e.getValue()).append("\"\n");
         }
-        Files.writeString(tomlFile, toml.toString());
+        Files.write(tomlFile, toml.toString().getBytes(StandardCharsets.UTF_8));
 
         System.out.println("\nExported " + vault.size() + " entries to:");
         System.out.println("  " + propsFile.toAbsolutePath() + "  (EI cipher-text format)");
@@ -109,8 +109,8 @@ public class VaultExtractor {
         CookieManager cm = new CookieManager();
         CookieHandler.setDefault(cm);
 
-        String loginBody = "username=" + URLEncoder.encode(parts[0], StandardCharsets.UTF_8)
-                         + "&password=" + URLEncoder.encode(parts[1], StandardCharsets.UTF_8)
+        String loginBody = "username=" + URLEncoder.encode(parts[0], "UTF-8")
+                         + "&password=" + URLEncoder.encode(parts[1], "UTF-8")
                          + "&loginStatus=true";
         httpPost(baseUrl + "/carbon/admin/login_action.jsp", loginBody, creds);
 
@@ -243,7 +243,11 @@ public class VaultExtractor {
         int status = c.getResponseCode();
         InputStream is = (status >= 400) ? c.getErrorStream() : c.getInputStream();
         if (is == null) return null;
-        return new String(is.readAllBytes(), StandardCharsets.UTF_8);
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int n;
+        while ((n = is.read(chunk)) != -1) buf.write(chunk, 0, n);
+        return buf.toString("UTF-8");
     }
 
     static HttpURLConnection open(String urlStr) throws Exception {
