@@ -14,8 +14,18 @@ A lightweight Java tool that connects to a WSO2 EI 6.x instance, reads all Secur
 
 ## How to Run
 
+The tool verifies the EI server's TLS certificate. WSO2 EI uses a self-signed certificate by default, so point the tool to the EI truststore:
+
 ```bash
-java -jar VaultExtractor.jar
+java -Djavax.net.ssl.trustStore=<EI_HOME>/repository/resources/security/client-truststore.jks \
+     -Djavax.net.ssl.trustStorePassword=<truststore password> \
+     -jar VaultExtractor.jar
+```
+
+On a trusted network only, you can skip certificate and host name checks with `--insecure`:
+
+```bash
+java -jar VaultExtractor.jar --insecure
 ```
 
 ---
@@ -121,7 +131,7 @@ java -jar VaultExtractor.jar
 
 ## Security Notes
 
-- The tool accepts the EI server's TLS certificate without validating it, so that it works with the default self-signed certificates. Run it only on a trusted network, against a server you know.
+- TLS certificates and host names are verified by default. `--insecure` turns both checks off; use it only on a trusted network, against a server you know.
 - The output files contain encrypted vault values. Store them securely and delete them after the migration.
 - The values stay encrypted with the source server's keystore. The target MI server must use the same keystore (or you must re-encrypt the values) for them to decrypt.
 
