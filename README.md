@@ -104,3 +104,29 @@ java -jar VaultExtractor.jar
 ```
 
 Java 11+ must be installed. Download from [adoptium.net](https://adoptium.net) if needed.
+
+---
+
+## Build from Source
+
+The tool is a single Java file with no external dependencies.
+
+```bash
+javac VaultExtractor.java
+jar cfe VaultExtractor.jar VaultExtractor *.class
+java -jar VaultExtractor.jar
+```
+
+---
+
+## Security Notes
+
+- The tool accepts the EI server's TLS certificate without validating it, so that it works with the default self-signed certificates. Run it only on a trusted network, against a server you know.
+- The output files contain encrypted vault values. Store them securely and delete them after the migration.
+- The values stay encrypted with the source server's keystore. The target MI server must use the same keystore (or you must re-encrypt the values) for them to decrypt.
+
+---
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
