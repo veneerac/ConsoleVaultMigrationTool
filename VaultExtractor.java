@@ -11,7 +11,25 @@ import javax.net.ssl.*;
 public class VaultExtractor {
 
     public static void main(String[] args) throws Exception {
-        disableSSLVerification();
+        boolean insecure = Arrays.asList(args).contains("--insecure");
+        if (insecure) {
+            System.out.println("WARNING: --insecure is set. TLS certificates and host names are NOT verified.");
+            System.out.println("         Use this only on a trusted network.\n");
+            disableSSLVerification();
+        }
+        try {
+            run();
+        } catch (SSLException e) {
+            System.err.println("\nTLS error: " + e.getMessage());
+            System.err.println("The EI server certificate is not trusted. Either point the tool to the EI truststore:");
+            System.err.println("  java -Djavax.net.ssl.trustStore=<EI_HOME>/repository/resources/security/client-truststore.jks \\");
+            System.err.println("       -Djavax.net.ssl.trustStorePassword=<truststore password> -jar VaultExtractor.jar");
+            System.err.println("or, on a trusted network only, run with --insecure.");
+            System.exit(1);
+        }
+    }
+
+    static void run() throws Exception {
 
         Console console = System.console();
         Scanner sc = new Scanner(System.in);
